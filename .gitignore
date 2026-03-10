@@ -1,0 +1,14 @@
+# 敏感文件不上传
+.openclaw/
+credentials/
+feishu/
+*.log
+
+# 测试文件（可选）
+test_*.js
+test_*.mjs
+check_*.js
+
+# 系统文件
+.DS_Store
+Thumbs.db
