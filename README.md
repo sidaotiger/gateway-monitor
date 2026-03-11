@@ -1,140 +1,111 @@
 # Gateway Monitor
 
-OpenClaw Gateway 监控与自动恢复系统
+[English](#english) | [中文](#中文) | [日本語](#日本語)
 
-## 项目简介
+---
 
-Gateway Monitor 是一个用于监控 OpenClaw Gateway 服务状态的 Python 脚本。它可以实时检测 Gateway 服务是否正常运行，并在服务异常时自动尝试恢复，同时通过飞书发送通知告警。
+## English
 
-## 功能特点
+### Overview
+OpenClaw Gateway monitoring program with auto-restart and Feishu notification.
 
-- 🔍 **实时监控** - 每隔指定时间检查 Gateway 端口连通性
-- 🔄 **自动重启** - 服务异常时自动执行重启命令
-- 📢 **飞书通知** - 支持通过飞书 Webhook 发送告警通知
-- 📝 **日志记录** - 自动记录监控日志，便于排查问题
+### Features
+- 🌐 Real-time Gateway status monitoring
+- 🔄 Auto-restart when Gateway is down
+- 📱 Feishu notification on status change
+- 🖥️ GUI interface with system tray
+- ⚡ Single instance running
 
-## 安装说明
-
-### 环境要求
-
-- Python 3.7+
-- 已安装 OpenClaw
-
-### 安装步骤
-
-1. 克隆仓库：
+### Installation
 
 ```bash
+# Clone the repository
 git clone https://github.com/sidaotiger/gateway-monitor.git
 cd gateway-monitor
+
+# Run the monitor
+python gateway_monitor.py
 ```
 
-2. 确保 Python 环境可用：
+### Configuration
+- Default check interval: 30 seconds
+- Default port: 18789
+- Auto-restart: Enabled
+
+### Requirements
+- Python 3.8+
+- requests
+- tkinter (included in Python)
+- pystray
+
+---
+
+## 中文
+
+### 概述
+OpenClaw Gateway 监控程序，支持自动重启和飞书通知。
+
+### 功能
+- 🌐 实时监控 Gateway 状态
+- 🔄 Gateway 宕机自动重启
+- 📱 飞书通知状态变化
+- 🖥️ GUI 界面 + 系统托盘
+- ⚡ 单实例运行
+
+### 安装
 
 ```bash
-python3 --version
+# 克隆仓库
+git clone https://github.com/sidaotiger/gateway-monitor.git
+cd gateway-monitor
+
+# 运行监控程序
+python gateway_monitor.py
 ```
 
-## 配置说明
+### 配置
+- 默认检查间隔：30秒
+- 默认端口：18789
+- 自动重启：已开启
 
-编辑 `gateway_monitor.py` 文件中的配置项：
+### 环境要求
+- Python 3.8+
+- requests
+- tkinter（Python自带）
+- pystray
 
-```python
-# Gateway 连接配置
-GATEWAY_HOST = "127.0.0.1"      # Gateway 主机地址
-GATEWAY_PORT = 18789            # Gateway 端口
-CHECK_INTERVAL = 30            # 检查间隔（秒）
-TIMEOUT = 5                     # 连接超时（秒）
+---
 
-# 自动重启配置
-AUTO_RESTART = True            # 是否启用自动重启
-RESTART_WAIT = 10              # 重启后等待时间（秒）
+## 日本語
 
-# 飞书通知配置
-FEISHU_WEBHOOK_URL = "YOUR_FEISHU_WEBHOOK_URL"  # 替换为你的飞书 Webhook 地址
-```
+### 概要
+OpenClaw Gateway 監視プログラム自動再起動とFeishu通知付き。
 
-### 获取飞书 Webhook 地址
+### 機能
+- 🌐 Gatewayリアルタイム監視
+- 🔄 自動再起動
+- 📱 Feishu通知
+- 🖥️ GUIインターフェース
+- ⚡ シングルインスタンス
 
-1. 在飞书群聊中点击右上角「...」→「添加群机器人」
-2. 选择「自定义机器人」
-3. 设置机器人名称，复制 Webhook 地址
-4. 将地址填入配置中的 `FEISHU_WEBHOOK_URL`
-
-## 运行说明
-
-### 方式一：直接运行
+### インストール
 
 ```bash
-python3 gateway_monitor.py
+# リポジトリをクローン
+git clone https://github.com/sidaotiger/gateway-monitor.git
+cd gateway-monitor
+
+# 監視プログラムを実行
+python gateway_monitor.py
 ```
 
-### 方式二：后台运行（Linux/macOS）
+### 設定
+- デフォルト確認間隔：30秒
+- デフォルトポート：18789
+- 自動再起動：有効
 
-```bash
-nohup python3 gateway_monitor.py > gateway_monitor.log 2>&1 &
-```
-
-### 方式三：使用 systemd（Linux）
-
-创建服务文件 `/etc/systemd/system/gateway-monitor.service`：
-
-```ini
-[Unit]
-Description=OpenClaw Gateway Monitor
-After=network.target
-
-[Service]
-Type=simple
-User=your-user
-WorkingDirectory=/path/to/gateway-monitor
-ExecStart=/usr/bin/python3 /path/to/gateway-monitor/gateway_monitor.py
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-```
-
-启动服务：
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable gateway-monitor
-sudo systemctl start gateway-monitor
-```
-
-### 方式四：Windows 任务计划
-
-1. 创建一个 `.bat` 文件：
-```batch
-python.exe "C:\path\to\gateway-monitor\gateway_monitor.py"
-```
-
-2. 打开「任务计划程序」→ 创建基本任务 → 按指引添加
-
-## 项目结构
-
-```
-gateway-monitor/
-├── README.md              # 本文件
-├── gateway_monitor.py     # 主程序
-└── .gitignore            # Git 忽略配置
-```
-
-## 技术栈
-
-- **Python 3** - 脚本语言
-- **socket** - TCP 连接检测
-- **subprocess** - 执行系统命令
-- **urllib** - 飞书 Webhook HTTP 请求
-- **logging** - 日志记录
-- **飞书机器人 API** - 消息通知
-
-## 许可证
-
-MIT License
-
-## 作者
-
-[sidaotiger](https://github.com/sidaotiger)
+### 環境要件
+- Python 3.8+
+- requests
+- tkinter（Pythonに付属）
+- pystray
