@@ -25,6 +25,71 @@ FEISHU_APP_SECRET = "WmscS2ApukEoSOZPKBo5Mc1nq1nfR5YX"
 FEISHU_USER_ID = "ou_cae48beff850b3c9d72c59f8454c9439"
 feishu_token = None
 
+# 多语言支持
+LANG = {"current": "zh"}
+I18N = {
+    "zh": {
+        "title": "Gateway 监控",
+        "status": "状态",
+        "online": "在线",
+        "offline": "离线",
+        "unknown": "未知",
+        "last_check": "最后检查",
+        "start": "开始监控",
+        "stop": "停止监控",
+        "restart": "重启Gateway",
+        "check": "手动检查",
+        "settings": "设置",
+        "interval": "检查间隔(秒)",
+        "auto_restart": "自动重启",
+        "language": "语言",
+        "logs": "日志",
+        "restarted": "Gateway 已重启上线！",
+        "offline_alert": "Gateway 离线！",
+    },
+    "en": {
+        "title": "Gateway Monitor",
+        "status": "Status",
+        "online": "Online",
+        "offline": "Offline", 
+        "unknown": "Unknown",
+        "last_check": "Last Check",
+        "start": "Start",
+        "stop": "Stop",
+        "restart": "Restart Gateway",
+        "check": "Check Now",
+        "settings": "Settings",
+        "interval": "Interval (sec)",
+        "auto_restart": "Auto Restart",
+        "language": "Language",
+        "logs": "Logs",
+        "restarted": "Gateway Restarted!",
+        "offline_alert": "Gateway Offline!",
+    },
+    "ja": {
+        "title": "Gateway 監視",
+        "status": "ステータス",
+        "online": "オンライン",
+        "offline": "オフライン",
+        "unknown": "不明",
+        "last_check": "最終確認",
+        "start": "監視開始",
+        "stop": "監視停止",
+        "restart": "Gateway再起動",
+        "check": "今すぐ確認",
+        "settings": "設定",
+        "interval": "確認間隔(秒)",
+        "auto_restart": "自動再起動",
+        "language": "言語",
+        "logs": "ログ",
+        "restarted": "Gateway再起動しました！",
+        "offline_alert": "Gatewayオフライン！",
+    }
+}
+
+def t(key):
+    return I18N[LANG["current"]].get(key, key)
+
 def get_feishu_token():
     global feishu_token
     try:
@@ -207,6 +272,16 @@ def check_status_loop():
             time.sleep(0.5)
 
 
+def update_ui_text():
+    """更新UI文本（多语言）"""
+    if not root or not root.winfo_exists():
+        return
+    try:
+        root.title(t("title"))
+    except:
+        pass
+
+
 def update_ui():
     """更新UI"""
     global root
@@ -214,13 +289,16 @@ def update_ui():
     if not root or not root.winfo_exists():
         return
     
+    # 更新文本
+    update_ui_text()
+    
     try:
         # 更新状态标签
         if status == "在线":
-            root.status_label.config(text="● 在线", fg="#28a745", font=("微软雅黑", 20, "bold"))
+            root.status_label.config(text="● " + t("online"), fg="#28a745", font=("微软雅黑", 20, "bold"))
             root.status_indicator.config(bg="#28a745")
         else:
-            root.status_label.config(text="● 离线", fg="#dc3545", font=("微软雅黑", 20, "bold"))
+            root.status_label.config(text="● " + t("offline"), fg="#dc3545", font=("微软雅黑", 20, "bold"))
             root.status_indicator.config(bg="#dc3545")
         
         # 更新时间
@@ -532,6 +610,26 @@ def main():
                                         bg="#f5f5f5",
                                         activebackground="#f5f5f5")
     auto_restart_check.pack(side="left")
+    
+    # 语言选择
+    lang_frame = tk.Frame(settings_frame, bg="#f5f5f5")
+    lang_frame.pack(pady=5, fill="x", padx=10)
+    
+    tk.Label(lang_frame, text="语言/Language/言語:", font=("微软雅黑", 10),
+             bg="#f5f5f5").pack(side="left")
+    
+    lang_var = tk.StringVar(value=LANG["current"])
+    
+    def change_lang(*args):
+        LANG["current"] = lang_var.get()
+        add_log(f"语言已切换: {lang_var.get()}")
+        update_ui_text()
+    
+    lang_combo = ttk.Combobox(lang_frame, textvariable=lang_var, 
+                              values=["zh", "en", "ja"], width=5,
+                              state="readonly")
+    lang_combo.pack(side="left", padx=10)
+    lang_combo.bind("<<ComboboxSelected>>", change_lang)
     
     # ===== 日志区域 =====
     log_frame = tk.LabelFrame(main_frame, text="📋 监控日志", font=("微软雅黑", 11, "bold"),
