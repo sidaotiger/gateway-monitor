@@ -1,176 +1,603 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-OpenClaw Gateway 存活监控脚本
-监控端口 18789，挂了发通知，支持自动重启
+Gateway 监控程序 - Windows GUI 版本
+作者: 码哥
+功能: 监控 OpenClaw Gateway 状态，支持托盘、告警、自动重启
 """
 
-import socket
+import tkinter as tk
+from tkinter import ttk, messagebox
+import threading
 import time
-import logging
-import subprocess
-import urllib.request
 import json
+import os
+import sys
+import subprocess
+import requests
 from datetime import datetime
+import pystray
+from PIL import Image, ImageDraw
+
+# 飞书配置
+FEISHU_APP_ID = "cli_a925035cf63bdbc6"
+FEISHU_APP_SECRET = "WmscS2ApukEoSOZPKBo5Mc1nq1nfR5YX"
+FEISHU_USER_ID = "ou_cae48beff850b3c9d72c59f8454c9439"
+feishu_token = None
+
+def get_feishu_token():
+    global feishu_token
+    try:
+        url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
+        data = {"app_id": FEISHU_APP_ID, "app_secret": FEISHU_APP_SECRET}
+        r = requests.post(url, json=data, timeout=10)
+        result = r.json()
+        if result.get("code") == 0:
+            feishu_token = result["tenant_access_token"]
+            return True
+    except:
+        pass
+    return False
+
+def send_feishu(msg):
+    global feishu_token
+    if not feishu_token:
+        get_feishu_token()
+    try:
+        url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id"
+        headers = {"Authorization": f"Bearer {feishu_token}", "Content-Type": "application/json"}
+        data = {"receive_id": FEISHU_USER_ID, "msg_type": "text", "content": json.dumps({"text": msg})}
+        requests.post(url, headers=headers, json=data, timeout=10)
+    except:
+        pass
+import winsound
 
 # 配置
-GATEWAY_HOST = "127.0.0.1"
-GATEWAY_PORT = 18789
-CHECK_INTERVAL = 30  # 秒
-TIMEOUT = 5  # 连接超时秒数
-AUTO_RESTART = True  # 是否自动重启
-RESTART_WAIT = 10  # 重启后等待秒数再检查
+DEFAULT_PORT = 18789
+DEFAULT_INTERVAL = 30  # 默认检查间隔（秒）
+CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gateway_monitor_config.json')
+LOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gateway_monitor.lock')
 
-# 日志配置
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler("gateway_monitor.log", encoding="utf-8"),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+# 单例检查
+def check_single_instance():
+    import os
+    if os.path.exists(LOCK_FILE):
+        try:
+            with open(LOCK_FILE, 'r') as f:
+                pid = int(f.read().strip())
+            # 检查进程是否在运行
+            result = subprocess.run(f'tasklist /FI "PID eq {pid}"', capture_output=True, text=True, shell=True)
+            if str(pid) in result.stdout:
+                return False  # 已有实例在运行
+        except:
+            pass
+    # 写入当前进程PID
+    with open(LOCK_FILE, 'w') as f:
+        f.write(str(os.getpid()))
+    return True
+
+# 全局变量
+status = "未知"
+last_check_time = None
+history_logs = []
+is_monitoring = True  # 监控开关
+check_thread = None
+auto_restart = True
+check_interval = DEFAULT_INTERVAL
+root = None
+icon = None
 
 
-def check_gateway() -> bool:
-    """检查 Gateway 是否存活"""
+def load_config():
+    """加载配置"""
+    global check_interval, auto_restart
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(TIMEOUT)
-        result = sock.connect_ex((GATEWAY_HOST, GATEWAY_PORT))
-        sock.close()
-        return result == 0
+        if os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+                check_interval = config.get('check_interval', DEFAULT_INTERVAL)
+                auto_restart = config.get('auto_restart', False)
     except Exception as e:
-        logger.error(f"检查连接时出错: {e}")
+        print(f"加载配置失败: {e}")
+
+
+def save_config():
+    """保存配置"""
+    try:
+        config = {
+            'check_interval': check_interval,
+            'auto_restart': auto_restart
+        }
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"保存配置失败: {e}")
+
+
+def check_gateway_status():
+    """检查 Gateway 状态"""
+    url = f"http://127.0.0.1:{DEFAULT_PORT}/"
+    try:
+        response = requests.get(url, timeout=5)
+        if response.status_code == 200:
+            return True, "在线"
+        else:
+            return False, f"离线 (HTTP {response.status_code})"
+    except requests.exceptions.ConnectionError:
+        return False, "离线 (连接失败)"
+    except requests.exceptions.Timeout:
+        return False, "离线 (超时)"
+    except Exception as e:
+        return False, f"离线 ({str(e)})"
+
+
+def restart_gateway():
+    """重启 Gateway"""
+    try:
+        # 先杀掉 node 进程
+        subprocess.run('taskkill /F /IM node.exe', 
+                      shell=True, capture_output=True, timeout=30)
+        time.sleep(1)
+        # 再启动 - 开新窗口运行
+        subprocess.Popen('cmd /k "openclaw gateway run --port 18789"',
+                      shell=True)
+        return True
+    except Exception as e:
         return False
 
 
-# ===== 飞书配置 =====
-# 在飞书群聊添加机器人后获取 Webhook 地址
-FEISHU_WEBHOOK_URL = "YOUR_FEISHU_WEBHOOK_URL"  # 替换为你的飞书 Webhook 地址
+def add_log(message):
+    """添加日志"""
+    global history_logs
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    log_entry = f"[{timestamp}] {message}"
+    history_logs.insert(0, log_entry)
+    if len(history_logs) > 30:
+        history_logs = history_logs[:30]
+    return log_entry
 
 
-def send_feishu(msg: str):
-    """发送飞书消息"""
-    if FEISHU_WEBHOOK_URL == "YOUR_FEISHU_WEBHOOK_URL":
-        logger.warning("飞书 Webhook 未配置，跳过发送")
+def check_status_loop():
+    """状态检查循环"""
+    global status, last_check_time, is_monitoring, check_interval, auto_restart
+    
+    while True:
+        if is_monitoring:
+            old_status = status
+            is_online, status_msg = check_gateway_status()
+            
+            if is_online:
+                status = "在线"
+            else:
+                status = "离线"
+            
+            last_check_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            add_log(f"Gateway {status_msg}")
+            
+            # 状态变化告警
+            if old_status != "未知" and old_status != status:
+                # 播放提示音
+                try:
+                    winsound.MessageBeep(winsound.MB_ICONWARNING)
+                except:
+                    pass
+                
+                # 托盘告警
+                if icon:
+                    show_notification(f"Gateway 状态变化: {old_status} → {status}")
+                
+                # 自动重启
+                if auto_restart and status == "离线":
+                    add_log("正在尝试自动重启 Gateway...")
+                    if restart_gateway():
+                        add_log("Gateway 重启命令已发送")
+                        # 发送飞书通知
+                        send_feishu("🦞 Gateway 已重启上线！")
+                    else:
+                        add_log("Gateway 重启失败")
+            
+            # 更新UI
+            if root:
+                root.after(0, update_ui)
+        
+        # 等待下次检查
+        for _ in range(check_interval):
+            if not is_monitoring:
+                break
+            time.sleep(0.5)
+
+
+def update_ui():
+    """更新UI"""
+    global root
+    
+    if not root or not root.winfo_exists():
         return
     
     try:
-        data = {
-            "msg_type": "text",
-            "content": {"text": msg}
-        }
-        req = urllib.request.Request(
-            FEISHU_WEBHOOK_URL,
-            data=json.dumps(data).encode("utf-8"),
-            headers={"Content-Type": "application/json"}
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
-            if result.get("code") == 0:
-                logger.info("飞书消息发送成功")
-            else:
-                logger.error(f"飞书消息发送失败: {result}")
-    except Exception as e:
-        logger.error(f"发送飞书消息出错: {e}")
-
-
-def send_notification(status: str):
-    """发送通知"""
-    msg = f"🚨 OpenClaw Gateway {status}！时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    
-    # 打印到控制台
-    print(msg)
-    logger.warning(msg)
-    
-    # 发送飞书通知
-    send_feishu(msg)
-
-
-def restart_gateway() -> bool:
-    """尝试重启 Gateway"""
-    logger.info("正在执行自动重启...")
-    try:
-        # 执行 openclaw gateway start 命令
-        result = subprocess.run(
-            ["openclaw", "gateway", "start"],
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-        if result.returncode == 0:
-            logger.info(f"重启命令执行成功: {result.stdout}")
-            return True
+        # 更新状态标签
+        if status == "在线":
+            root.status_label.config(text="● 在线", fg="#28a745", font=("微软雅黑", 20, "bold"))
+            root.status_indicator.config(bg="#28a745")
         else:
-            logger.error(f"重启命令执行失败: {result.stderr}")
-            return False
-    except subprocess.TimeoutExpired:
-        logger.error("重启命令执行超时")
-        return False
-    except FileNotFoundError:
-        logger.error("未找到 openclaw 命令，请确保已安装")
-        return False
-    except Exception as e:
-        logger.error(f"执行重启时出错: {e}")
-        return False
+            root.status_label.config(text="● 离线", fg="#dc3545", font=("微软雅黑", 20, "bold"))
+            root.status_indicator.config(bg="#dc3545")
+        
+        # 更新时间
+        if last_check_time:
+            root.last_check_label.config(text=f"最后检查: {last_check_time}")
+        
+        # 更新监控状态
+        if is_monitoring:
+            root.monitor_status_label.config(text="监控中", fg="#28a745")
+            root.start_stop_btn.config(text="停止监控", bg="#dc3545", fg="white")
+        else:
+            root.monitor_status_label.config(text="已停止", fg="#6c757d")
+            root.start_stop_btn.config(text="开始监控", bg="#28a745", fg="white")
+        
+        # 更新日志
+        log_text = "\n".join(history_logs)
+        root.log_text.delete(1.0, tk.END)
+        root.log_text.insert(1.0, log_text)
+    except:
+        pass
 
 
-def wait_for_gateway(wait_seconds: int = 10) -> bool:
-    """等待 Gateway 启动并检查是否存活"""
-    logger.info(f"等待 {wait_seconds} 秒后检查 Gateway 状态...")
-    time.sleep(wait_seconds)
-    return check_gateway()
+def create_tray_icon(is_online=True):
+    """创建托盘图标"""
+    width = 64
+    height = 64
+    image = Image.new('RGB', (width, height), color='white')
+    draw = ImageDraw.Draw(image)
+    
+    if is_online:
+        # 绿色 - 在线
+        draw.ellipse([8, 8, 56, 56], fill='#28a745', outline='white', width=2)
+        # 画一个勾
+        draw.line([20, 32, 28, 42], fill='white', width=3)
+        draw.line([28, 42, 44, 22], fill='white', width=3)
+    else:
+        # 红色 - 离线
+        draw.ellipse([8, 8, 56, 56], fill='#dc3545', outline='white', width=2)
+        # 画一个X
+        draw.line([20, 20, 44, 44], fill='white', width=3)
+        draw.line([44, 20, 20, 44], fill='white', width=3)
+    
+    return image
+
+
+def show_notification(message):
+    """显示通知"""
+    if icon:
+        try:
+            icon.notify(message, "Gateway 监控")
+        except:
+            pass
+
+
+def update_tray_icon():
+    """更新托盘图标"""
+    global icon
+    if icon:
+        try:
+            is_online = (status == "在线")
+            image = create_tray_icon(is_online)
+            icon.icon = image
+            icon.menu = pystray.Menu(
+                pystray.MenuItem("显示主窗口", on_tray_show),
+                pystray.MenuItem("手动检查", on_tray_check),
+                pystray.MenuItem("重启 Gateway", on_tray_restart),
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem("退出", on_tray_exit)
+            )
+        except:
+            pass
+
+
+def on_tray_show(icon, item):
+    """托盘点击 - 显示"""
+    global root
+    if root:
+        root.deiconify()
+        root.lift()
+        root.focus()
+
+
+def on_tray_check(icon, item):
+    """托盘点击 - 手动检查"""
+    is_online, msg = check_gateway_status()
+    status_str = "在线" if is_online else "离线"
+    add_log(f"[托盘] 手动检查: Gateway {msg}")
+    update_ui()
+    update_tray_icon()
+
+
+def on_tray_restart(icon, item):
+    """托盘点击 - 重启"""
+    add_log("[托盘] 正在重启 Gateway...")
+    if restart_gateway():
+        add_log("[托盘] 重启命令已发送")
+    else:
+        add_log("[托盘] 重启失败")
+    update_ui()
+
+
+def on_tray_exit(icon, item):
+    """托盘点击 - 退出"""
+    global is_monitoring
+    is_monitoring = False
+    if icon:
+        icon.stop()
+    if root:
+        root.destroy()
+    sys.exit(0)
+
+
+def setup_tray():
+    """设置托盘"""
+    global icon
+    
+    image = create_tray_icon()
+    
+    menu = pystray.Menu(
+        pystray.MenuItem("显示主窗口", on_tray_show),
+        pystray.MenuItem("手动检查", on_tray_check),
+        pystray.MenuItem("重启 Gateway", on_tray_restart),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("退出", on_tray_exit)
+    )
+    
+    icon = pystray.Icon("Gateway Monitor", image, "Gateway 监控", menu)
+    icon.run_detached()
+
+
+def on_closing():
+    """窗口关闭事件 - 最小化到托盘"""
+    global root
+    root.withdraw()
+
+
+def toggle_monitoring():
+    """切换监控状态"""
+    global is_monitoring
+    is_monitoring = not is_monitoring
+    
+    if is_monitoring:
+        add_log("监控已启动")
+    else:
+        add_log("监控已停止")
+    
+    update_ui()
+
+
+def start_check_thread():
+    """启动检查线程"""
+    global check_thread
+    check_thread = threading.Thread(target=check_status_loop, daemon=True)
+    check_thread.start()
 
 
 def main():
-    logger.info(f"开始监控 Gateway ({GATEWAY_HOST}:{GATEWAY_PORT})，间隔 {CHECK_INTERVAL} 秒")
-    logger.info(f"自动重启功能: {'开启' if AUTO_RESTART else '关闭'}")
+    """主函数"""
+    global root, check_interval
     
-    is_alive = None  # 初始状态未知
+    # 单例检查
+    if not check_single_instance():
+        print("监控程序已在运行！")
+        try:
+            root_temp = tk.Tk()
+            root_temp.withdraw()
+            tk.messagebox.showwarning("警告", "监控程序已在运行！")
+        except:
+            pass
+        sys.exit(0)
     
-    while True:
-        alive = check_gateway()
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        if alive:
-            logger.info(f"[{current_time}] Gateway 存活 ✓")
-        else:
-            logger.error(f"[{current_time}] Gateway 挂了 ✗")
-            
-            # 状态变化时通知（只在从存活变挂时通知，避免重复）
-            if is_alive is True:
-                send_notification("已下线")
-            elif is_alive is None:
-                send_notification("无法连接")
-            
-            # 自动重启
-            if AUTO_RESTART:
-                send_notification("正在尝试自动重启...")
-                if restart_gateway():
-                    # 等待后检查是否恢复
-                    if wait_for_gateway(RESTART_WAIT):
-                        success_msg = f"✅ 自动重启成功！时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-                        print(success_msg)
-                        logger.info(success_msg)
-                        send_feishu(success_msg)
-                    else:
-                        fail_msg = f"❌ 自动重启后Gateway仍未恢复！时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-                        print(fail_msg)
-                        logger.error(fail_msg)
-                        send_feishu(fail_msg)
-                else:
-                    fail_msg = f"❌ 自动重启命令执行失败！时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-                    print(fail_msg)
-                    logger.error(fail_msg)
-                    send_feishu(fail_msg)
-        
-        # 更新状态
-        is_alive = alive
-        
-        # 等待下次检查
-        time.sleep(CHECK_INTERVAL)
+    # 加载配置
+    load_config()
+    
+    # 创建主窗口
+    root = tk.Tk()
+    root.title("Gateway 监控程序")
+    root.geometry("480x650")
+    root.resizable(False, False)
+    root.protocol("WM_DELETE_WINDOW", on_closing)
+    
+    # 主背景
+    main_frame = tk.Frame(root, bg="#f5f5f5")
+    main_frame.pack(fill="both", expand=True)
+    
+    # ===== 标题区域 =====
+    title_frame = tk.Frame(main_frame, bg="#2196F3", height=60)
+    title_frame.pack(fill="x")
+    title_frame.pack_propagate(False)
+    
+    title_label = tk.Label(title_frame, text="🔌 Gateway 状态监控", 
+                          font=("微软雅黑", 16, "bold"), fg="white", bg="#2196F3")
+    title_label.pack(pady=15)
+    
+    # ===== 状态显示面板 =====
+    status_panel = tk.Frame(main_frame, bg="white", bd=1, relief=tk.RIDGE)
+    status_panel.pack(pady=15, padx=20, fill="x")
+    
+    # 状态指示灯
+    root.status_indicator = tk.Canvas(status_panel, width=20, height=20, bg="white", highlightthickness=0)
+    root.status_indicator.create_oval(2, 2, 18, 18, fill="#6c757d", outline="#6c757d")
+    root.status_indicator.pack(side="left", padx=(15, 5), pady=15)
+    
+    # 状态文字
+    status_text_frame = tk.Frame(status_panel, bg="white")
+    status_text_frame.pack(side="left", fill="x", expand=True)
+    
+    root.status_label = tk.Label(status_text_frame, text="● 未知", 
+                                 fg="#6c757d", font=("微软雅黑", 20, "bold"),
+                                 bg="white")
+    root.status_label.pack(anchor="w")
+    
+    root.last_check_label = tk.Label(status_text_frame, text="等待检查...", 
+                                     font=("微软雅黑", 9), fg="#6c757d", bg="white")
+    root.last_check_label.pack(anchor="w")
+    
+    root.monitor_status_label = tk.Label(status_panel, text="监控中", 
+                                        font=("微软雅黑", 9, "bold"), 
+                                        fg="#28a745", bg="white")
+    root.monitor_status_label.pack(side="right", padx=15)
+    
+    # ===== 控制按钮区域 =====
+    control_frame = tk.Frame(main_frame, bg="#f5f5f5")
+    control_frame.pack(pady=5, padx=20, fill="x")
+    
+    def manual_check():
+        is_online, msg = check_gateway_status()
+        status_str = "在线" if is_online else "离线"
+        add_log(f"手动检查: Gateway {msg}")
+        update_ui()
+        update_tray_icon()
+    
+    def manual_restart():
+        if messagebox.askyesno("确认", "确定要重启 Gateway 吗?"):
+            add_log("正在手动重启 Gateway...")
+            if restart_gateway():
+                add_log("重启命令已发送")
+            else:
+                add_log("重启失败")
+            update_ui()
+    
+    # 启动/停止按钮
+    root.start_stop_btn = tk.Button(control_frame, text="停止监控", 
+                                    command=toggle_monitoring,
+                                    font=("微软雅黑", 10, "bold"),
+                                    bg="#dc3545", fg="white",
+                                    width=12, height=1,
+                                    relief=tk.RAISED)
+    root.start_stop_btn.pack(side="left", padx=5)
+    
+    tk.Button(control_frame, text="手动检查", command=manual_check, 
+              font=("微软雅黑", 10),
+              width=10, height=1).pack(side="left", padx=5)
+    
+    tk.Button(control_frame, text="重启 Gateway", command=manual_restart,
+              font=("微软雅黑", 10),
+              width=12, height=1).pack(side="left", padx=5)
+    
+    # ===== 设置界面 =====
+    settings_frame = tk.LabelFrame(main_frame, text="⚙️ 设置", font=("微软雅黑", 11, "bold"),
+                                   bg="#f5f5f5", fg="#333")
+    settings_frame.pack(pady=10, padx=20, fill="x")
+    
+    # 检查间隔设置
+    interval_frame = tk.Frame(settings_frame, bg="#f5f5f5")
+    interval_frame.pack(pady=8, fill="x", padx=10)
+    
+    tk.Label(interval_frame, text="检查间隔 (秒):", font=("微软雅黑", 10),
+             bg="#f5f5f5").pack(side="left")
+    
+    interval_var = tk.StringVar(value=str(check_interval))
+    interval_spin = tk.Spinbox(interval_frame, from_=5, to=300, 
+                               textvariable=interval_var, width=8,
+                               font=("微软雅黑", 10))
+    interval_spin.pack(side="left", padx=10)
+    
+    def update_interval():
+        global check_interval
+        try:
+            new_interval = int(interval_var.get())
+            if new_interval >= 5:
+                check_interval = new_interval
+                save_config()
+                add_log(f"检查间隔已设置为 {new_interval} 秒")
+        except:
+            pass
+    
+    tk.Button(interval_frame, text="应用", command=update_interval,
+              font=("微软雅黑", 9), width=6).pack(side="left")
+    
+    # 自动重启开关
+    auto_restart_frame = tk.Frame(settings_frame, bg="#f5f5f5")
+    auto_restart_frame.pack(pady=5, fill="x", padx=10)
+    
+    auto_restart_var = tk.BooleanVar(value=auto_restart)
+    
+    def toggle_auto_restart():
+        global auto_restart
+        auto_restart = auto_restart_var.get()
+        save_config()
+        status = "开启" if auto_restart else "关闭"
+        add_log(f"自动重启已{status}")
+    
+    auto_restart_check = tk.Checkbutton(auto_restart_frame, 
+                                        text="Gateway 离线时自动重启",
+                                        variable=auto_restart_var,
+                                        command=toggle_auto_restart,
+                                        font=("微软雅黑", 10),
+                                        bg="#f5f5f5",
+                                        activebackground="#f5f5f5")
+    auto_restart_check.pack(side="left")
+    
+    # ===== 日志区域 =====
+    log_frame = tk.LabelFrame(main_frame, text="📋 监控日志", font=("微软雅黑", 11, "bold"),
+                             bg="#f5f5f5", fg="#333")
+    log_frame.pack(pady=10, padx=20, fill="both", expand=True)
+    
+    # 日志文本框（带滚动条）
+    log_scroll = tk.Scrollbar(log_frame)
+    log_scroll.pack(side="right", fill="y")
+    
+    root.log_text = tk.Text(log_frame, height=10, font=("Consolas", 9),
+                            yscrollcommand=log_scroll.set,
+                            bg="#1e1e1e", fg="#00ff00", insertbackground="white")
+    root.log_text.pack(padx=(10,0), pady=10, fill="both", expand=True)
+    log_scroll.config(command=root.log_text.yview)
+    
+    # ===== 状态栏 =====
+    status_bar = tk.Label(main_frame, text="程序运行中 | 双击托盘图标显示主窗口",
+                         bd=1, relief=tk.SUNKEN, anchor=tk.W,
+                         font=("微软雅黑", 8), bg="#e9ecef")
+    status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+    
+    # 初始日志
+    add_log("Gateway 监控程序已启动")
+    add_log(f"检查间隔: {check_interval} 秒")
+    add_log(f"自动重启: {'开启' if auto_restart else '关闭'}")
+    
+    # 启动托盘
+    try:
+        setup_tray()
+        add_log("系统托盘已启动")
+    except Exception as e:
+        print(f"托盘启动失败: {e}")
+        add_log(f"托盘启动失败: {e}")
+    
+    # 启动检查线程
+    start_check_thread()
+    
+    # 立即进行一次检查
+    root.after(500, lambda: [update_ui(), update_tray_icon()])
+    
+    # 运行主循环
+    root.mainloop()
 
 
 if __name__ == "__main__":
+    # 检查依赖
+    try:
+        import requests
+    except ImportError:
+        print("请安装 requests 库: pip install requests")
+        input("按回车键退出...")
+        sys.exit(1)
+    
+    try:
+        import pystray
+    except ImportError:
+        print("请安装 pystray 库: pip install pystray")
+        input("按回车键退出...")
+        sys.exit(1)
+    
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        print("请安装 Pillow 库: pip install Pillow")
+        input("按回车键退出...")
+        sys.exit(1)
+    
     main()
